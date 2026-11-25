@@ -2,6 +2,8 @@
 
 Sylva 是为 VRChat 做的 SteamVR 悬浮键盘。它支持中文全拼、上屏后的词语联想和英文单词补全，通过 OSC 把文字发到聊天气泡。输入和联想都在本机完成。
 
+![Sylva 主界面：输入栏正在组拼「我想去」，下方显示候选词和键盘。](assets/branding/sylva-main.png)
+
 ## 使用
 
 1. 在 GitHub Releases 下载 Windows x64 便携包，解压到可写目录，运行 `sylva-vr.exe`。默认静默启动，右键托盘图标可以显示主窗口。
