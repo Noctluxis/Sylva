@@ -1,0 +1,30 @@
+[package]
+name = "sylva-vr"
+version = "0.2.1"
+license = "MPL-2.0"
+edition = "2024"
+description = "Native SteamVR Chinese keyboard for VRChat"
+
+[dependencies]
+msime-engine = "=0.2.0"
+unicode-segmentation = "1.12"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chinese-ime-lm = "=0.2.1"
+sha2 = "=0.11.1"
+
+[build-dependencies]
+cc = "1"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+opt-level = "s"
+
+[profile.release.package.chinese-ime-lm]
+opt-level = 3
+
+[profile.dev.package.chinese-ime-lm]
+opt-level = 3
+

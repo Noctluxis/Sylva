@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img">
+  <title>Sylva · 叶语</title>
+  <rect width="256" height="256" rx="60" fill="#173E34"/>
+  <path fill="#F1F7EF" d="M73 55H183C203 55 216 68 216 88V154C216 174 203 187 183 187H124L79 215V187H73C53 187 40 174 40 154V88C40 68 53 55 73 55Z"/>
+  <path fill="#173E34" d="M90 151C87 106 118 82 169 87C168 133 139 158 90 151Z"/>
+  <path d="M94 149L149 107" fill="none" stroke="#F1F7EF" stroke-width="7" stroke-linecap="round"/>
+</svg>

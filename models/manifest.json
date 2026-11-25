@@ -1,0 +1,12 @@
+{
+  "model": "pinyin-ime-reranker-4M",
+  "file": "sentence-model.safetensors",
+  "bytes": 4486280,
+  "sha256": "86ac529510cb3b4968a5e6ade83ec8080f5b34a0a681e75c362accbbd387d1c1",
+  "source": "https://github.com/metasequoiaime/chinese-ime-lm/releases/download/model-v1/sentence-model.safetensors",
+  "release": "model-v1",
+  "license": "Apache-2.0",
+  "config": "{\"vocab\":8192,\"n_layer\":6,\"n_head\":4,\"n_embd\":192,\"context\":64,\"dropout\":0.1}",
+  "inference_crate": "chinese-ime-lm 0.2.1",
+  "source_commit": "0609e880e9363571e10e9536049a7c69fe0b4189"
+}

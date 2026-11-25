@@ -1,0 +1,51 @@
+{
+  "version": 2,
+  "minimum_required_version": 1,
+  "action_sets": [
+    {
+      "name": "/actions/main",
+      "usage": "leftright"
+    }
+  ],
+  "actions": [
+    {
+      "name": "/actions/main/in/click",
+      "type": "boolean",
+      "requirement": "mandatory"
+    },
+    {
+      "name": "/actions/main/in/grab",
+      "type": "boolean",
+      "requirement": "mandatory"
+    },
+    {
+      "name": "/actions/main/in/toggle",
+      "type": "boolean",
+      "requirement": "mandatory"
+    },
+    {
+      "name": "/actions/main/out/haptic",
+      "type": "vibration",
+      "requirement": "optional"
+    }
+  ],
+  "default_bindings": [
+    {
+      "controller_type": "oculus_touch",
+      "binding_url": "oculus_touch.json"
+    },
+    {
+      "controller_type": "pico_controller",
+      "binding_url": "pico_controller.json"
+    }
+  ],
+  "localization": [
+    {
+      "language_tag": "en_us",
+      "/actions/main": "Sylva keyboard",
+      "/actions/main/in/click": "Click key",
+      "/actions/main/in/grab": "Grab panel",
+      "/actions/main/in/toggle": "Toggle panel (double B)"
+    }
+  ]
+}

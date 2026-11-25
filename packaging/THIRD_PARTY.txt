@@ -1,0 +1,31 @@
+Sylva — 许可与来源
+
+Sylva 自有代码采用 MPL-2.0，全文见 Sylva/MPL-2.0.txt。
+对应源码可在下载此便携包的 GitHub Release 页面免费下载，选择同版本的 Source code (zip)。
+
+本目录保留依赖的许可证、版权声明和来源。
+
+Rust 组件的版本、许可及对应源代码下载地址见 components.txt。
+
+水杉输入引擎：msime-engine 0.2.0，MPL-2.0。
+对应源代码可免费下载：
+https://static.crates.io/crates/msime-engine/msime-engine-0.2.0.crate
+https://github.com/metasequoiaime/msime/tree/9677977c315bc8c775b790dd4509f7f92af96041/crates/engine
+许可及引擎内其他组件的声明见 msime-engine-0.2.0/。
+
+水杉词库：dict-v2.0.41，含 GPL-3.0、CC-BY-SA-4.0、CC-BY-4.0、MIT、WTFPL 和 SCOWL 数据。
+数据声明和来源见 dictionary/；SCOWL 声明还与英文词库保存在 data/。
+对应词条源码：
+https://github.com/metasequoiaime/msime-dictionary/tree/8e8b7817c91600913625edb7995a7397fbb6899a
+对应构建器：
+https://github.com/metasequoiaime/msime/tree/09a69f20b4726f75d4aa318975e3e891c1135aaf/crates/dict-builder
+Contains statistics derived from Chinese Wikipedia (20260901 dump),
+Wikipedia contributors, CC BY-SA 4.0.
+
+神经联想：chinese-ime-lm 0.2.1，Apache-2.0。
+模型：pinyin-ime-reranker-4M，model-v1，Apache-2.0。
+https://github.com/metasequoiaime/chinese-ime-lm/releases/tag/model-v1
+许可、训练数据署名和原模型来源记录见 neural-model/。
+
+OpenVR：Valve Software，BSD-3-Clause，完整声明见 OpenVR/。
+https://github.com/ValveSoftware/openvr/tree/0924064316de3effbcd1acf1e309182a2deb1c05

@@ -1,0 +1,84 @@
+{
+  "action_manifest_version": 2,
+  "controller_type": "oculus_touch",
+  "name": "Sylva — dual pointers",
+  "description": "Trigger: click. Grip: move. Double B: show/hide.",
+  "category": "steamvr_input",
+  "bindings": {
+    "/actions/main": {
+      "sources": [
+        {
+          "path": "/user/hand/left/input/trigger",
+          "mode": "button",
+          "parameters": {
+            "click_activation_threshold": "0.7",
+            "click_deactivation_threshold": "0.55"
+          },
+          "inputs": {
+            "click": {
+              "output": "/actions/main/in/click"
+            }
+          }
+        },
+        {
+          "path": "/user/hand/left/input/grip",
+          "mode": "button",
+          "parameters": {
+            "click_activation_threshold": "0.7",
+            "click_deactivation_threshold": "0.55"
+          },
+          "inputs": {
+            "click": {
+              "output": "/actions/main/in/grab"
+            }
+          }
+        },
+        {
+          "path": "/user/hand/right/input/trigger",
+          "mode": "button",
+          "parameters": {
+            "click_activation_threshold": "0.7",
+            "click_deactivation_threshold": "0.55"
+          },
+          "inputs": {
+            "click": {
+              "output": "/actions/main/in/click"
+            }
+          }
+        },
+        {
+          "path": "/user/hand/right/input/grip",
+          "mode": "button",
+          "parameters": {
+            "click_activation_threshold": "0.7",
+            "click_deactivation_threshold": "0.55"
+          },
+          "inputs": {
+            "click": {
+              "output": "/actions/main/in/grab"
+            }
+          }
+        },
+        {
+          "path": "/user/hand/right/input/b",
+          "mode": "button",
+          "inputs": {
+            "double": {
+              "output": "/actions/main/in/toggle"
+            }
+          }
+        }
+      ],
+      "haptics": [
+        {
+          "path": "/user/hand/left/output/haptic",
+          "output": "/actions/main/out/haptic"
+        },
+        {
+          "path": "/user/hand/right/output/haptic",
+          "output": "/actions/main/out/haptic"
+        }
+      ]
+    }
+  }
+}

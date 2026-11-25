@@ -1,0 +1,7 @@
+* text=auto
+*.pcm binary
+*.safetensors binary
+*.png binary
+*.ico binary
+*.dll binary
+*.lib binary
