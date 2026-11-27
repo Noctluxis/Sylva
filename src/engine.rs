@@ -25,6 +25,8 @@ pub enum Action {
     Clear,
     Cancel,
     Send,
+    SendTranslated(crate::translation::Config),
+    RestoreUnsent,
     SetPrediction(bool),
     SetTypingIndicator(bool),
     PauseTyping,
@@ -44,6 +46,8 @@ pub struct Snapshot {
     pub english: bool,
     pub caps: bool,
     pub ready: bool,
+    pub translating: bool,
+    pub recoverable: bool,
     pub status: String,
     pub latency_ms: f64,
     pub neural_status: String,
@@ -82,6 +86,7 @@ impl Snapshot {
     }
     pub fn can_send(&self) -> bool {
         self.ready
+            && !self.translating
             && self.preedit.is_empty()
             && !self.draft.trim().is_empty()
             && self.count() <= 144
@@ -98,6 +103,7 @@ pub struct Editor {
     engine_revision: u64,
     candidate_map: Vec<usize>,
     previous_map: Option<(u64, Vec<usize>)>,
+    unsent: std::collections::VecDeque<String>,
 }
 impl Editor {
     pub fn new(
@@ -144,6 +150,7 @@ impl Editor {
             engine_revision: 0,
             candidate_map: Vec::new(),
             previous_map: None,
+            unsent: Default::default(),
         };
         editor.refresh();
         Ok(editor)
@@ -236,6 +243,66 @@ impl Editor {
     fn composing(&self) -> bool {
         !self.session.display_snapshot().preedit.is_empty()
     }
+    fn begin_translation(
+        &mut self,
+        config: crate::translation::Config,
+        notify: mpsc::SyncSender<Action>,
+    ) -> Option<crate::translation::Task> {
+        self.state.sequence += 1;
+        if self.state.translating {
+            return None;
+        }
+        if !self.state.can_send() {
+            self.state.status = "请先确认拼音，并将原文控制在 144 字符以内".into();
+            return None;
+        }
+        if self.osc.is_none() {
+            self.state.status = "试打模式，未连接 OSC".into();
+            return None;
+        }
+        match crate::translation::Task::start(config, self.state.draft.clone(), notify) {
+            Ok(task) => {
+                if let Some(osc) = &mut self.osc {
+                    let _ = osc.typing(false);
+                }
+                self.state.clear_draft();
+                self.session.command(Command::Cancel);
+                self.reset_context();
+                self.refresh();
+                self.state.translating = true;
+                self.state.status.clear();
+                Some(task)
+            }
+            Err(e) => {
+                self.state.status = e;
+                None
+            }
+        }
+    }
+    fn finish_translation(&mut self, original: String, result: Result<String, String>) {
+        self.state.translating = false;
+        let sent = result.and_then(|message| {
+            self.osc
+                .as_ref()
+                .ok_or_else(|| "OSC 未连接".to_string())?
+                .send(&message)
+                .map_err(|e| e.to_string())
+        });
+        match sent {
+            Ok(()) => self.state.status = "译文已发出".into(),
+            Err(e) => {
+                self.state.status = format!("未发送 · {e}");
+                if self.state.draft.is_empty() && !self.composing() {
+                    self.state.insert(&original);
+                    self.reset_context();
+                    self.refresh();
+                } else {
+                    self.unsent.push_back(original);
+                    self.state.recoverable = true;
+                }
+            }
+        }
+    }
     pub fn apply(&mut self, action: Action) {
         if matches!(action, Action::SuggestionsReady) {
             return;
@@ -262,6 +329,17 @@ impl Editor {
             return;
         }
         match action {
+            Action::SendTranslated(_) => unreachable!("handled by the worker"),
+            Action::RestoreUnsent => {
+                if self.state.draft.is_empty()
+                    && !self.composing()
+                    && let Some(text) = self.unsent.pop_front()
+                {
+                    self.state.insert(&text);
+                    self.reset_context();
+                    self.state.recoverable = !self.unsent.is_empty();
+                }
+            }
             // The number/symbol layer inserts the displayed character. Desktop
             // digit shortcuts still use Key, so they can select candidates.
             Action::Literal(c) => {
@@ -507,6 +585,7 @@ impl Worker {
                             .map_or("基础联想已开启".into(), |p| p.status());
                         let _ = state_tx.send(editor.state.clone());
                         crate::native::Native::wake();
+                        let mut translation: Option<crate::translation::Task> = None;
                         loop {
                             match rx.recv_timeout(Duration::from_millis(500)) {
                                 Ok(Action::Stop) | Err(mpsc::RecvTimeoutError::Disconnected) => {
@@ -527,7 +606,15 @@ impl Worker {
                                             | Action::Language
                                             | Action::Caps
                                     );
-                                    editor.apply(action);
+                                    if let Action::SendTranslated(config) = action {
+                                        if let Some(task) =
+                                            editor.begin_translation(config, notify.clone())
+                                        {
+                                            translation = Some(task);
+                                        }
+                                    } else {
+                                        editor.apply(action);
+                                    }
                                     if state_tx.send(editor.state.clone()).is_err() {
                                         break;
                                     }
@@ -557,6 +644,22 @@ impl Worker {
                                 Err(mpsc::RecvTimeoutError::Timeout) => editor.idle(),
                             }
                             let mut changed = false;
+                            if let Some(task) = &translation {
+                                let result = match task.result.try_recv() {
+                                    Ok(r) => Some(r),
+                                    Err(mpsc::TryRecvError::Disconnected) => {
+                                        Some(Err("翻译任务已停止".into()))
+                                    }
+                                    Err(mpsc::TryRecvError::Empty) => None,
+                                };
+                                if let Some(result) = result {
+                                    editor.finish_translation(
+                                        translation.take().unwrap().original,
+                                        result,
+                                    );
+                                    changed = true;
+                                }
+                            }
                             if let Some(Some(lookup)) = english_lookup.get() {
                                 while let Ok((revision, rows)) = lookup.results.try_recv() {
                                     changed |= editor.accept_english(revision, rows);
@@ -610,6 +713,95 @@ impl Drop for Worker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[ignore = "requires dictionaries, public Edge translation and loopback UDP"]
+    fn translation_allows_typing_until_one_multiline_osc_packet() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let receiver = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        receiver
+            .set_read_timeout(Some(Duration::from_secs(12)))
+            .unwrap();
+        let worker = Worker::start_for_check(
+            root.join("data"),
+            root.join("runtime/translation-osc-test"),
+            Some(Osc::new(receiver.local_addr().unwrap()).unwrap()),
+            false,
+            false,
+        );
+        let wait = |f: &dyn Fn(&Snapshot) -> bool| {
+            let end = Instant::now() + Duration::from_secs(15);
+            loop {
+                let s = worker
+                    .output
+                    .recv_timeout(end.saturating_duration_since(Instant::now()))
+                    .unwrap();
+                if f(&s) {
+                    break s;
+                }
+            }
+        };
+        wait(&|s| s.ready);
+        for c in "你好！".chars() {
+            worker.input.send(Action::Literal(c)).unwrap();
+        }
+        worker
+            .input
+            .send(Action::SendTranslated(crate::translation::Config {
+                enabled: true,
+                second: Some("ja".into()),
+                ..Default::default()
+            }))
+            .unwrap();
+        let start = Instant::now();
+        worker.input.send(Action::Literal('新')).unwrap();
+        wait(&|s| s.translating && s.draft == "新");
+        println!(
+            "Input acknowledged while translation was pending: {:?}",
+            start.elapsed()
+        );
+        let mut bytes = [0u8; 1024];
+        let n = receiver.recv(&mut bytes).unwrap();
+        assert_eq!(&bytes[..24], b"/chatbox/input\0\0,sTF\0\0\0\0");
+        let body = std::str::from_utf8(&bytes[24..n])
+            .unwrap()
+            .trim_end_matches('\0');
+        let lines: Vec<_> = body.lines().collect();
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0], "你好！");
+        assert!(lines[1].contains(|c: char| c.is_ascii_alphabetic()));
+        assert!(lines[2].contains(|c: char| ('ぁ'..='ヿ').contains(&c)));
+        wait(&|s| !s.translating && s.draft == "新");
+        receiver
+            .set_read_timeout(Some(Duration::from_millis(100)))
+            .unwrap();
+        assert!(receiver.recv(&mut bytes).is_err());
+    }
+    #[test]
+    #[ignore = "requires dictionaries"]
+    fn failed_translation_preserves_new_edits_and_unfinished_pinyin() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut e = Editor::new(
+            &root.join("data"),
+            &root.join("runtime/translation-recovery"),
+            None,
+            false,
+            false,
+        )
+        .unwrap();
+        e.apply(Action::Key('n'));
+        let preedit = e.state.preedit.clone();
+        assert!(!preedit.is_empty());
+        e.finish_translation("旧草稿".into(), Err("连接超时".into()));
+        assert!(e.state.recoverable);
+        assert_eq!(e.state.preedit, preedit);
+        e.apply(Action::Cancel);
+        e.apply(Action::RestoreUnsent);
+        assert_eq!(e.state.draft, "旧草稿");
+        assert!(!e.state.recoverable);
+        e.apply(Action::Clear);
+        e.finish_translation("再试一次".into(), Err("超出字符限制".into()));
+        assert_eq!(e.state.draft, "再试一次");
+    }
     #[test]
     #[ignore = "requires the downloaded real dictionaries and loopback UDP"]
     fn real_engine_to_osc_only_sends_confirmed_text() {

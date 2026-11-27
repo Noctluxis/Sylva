@@ -13,6 +13,7 @@ mod perf;
 mod pointer;
 mod render_bench;
 mod startup;
+mod translation;
 mod ui;
 use engine::{Action, Worker};
 use native::Native;
@@ -31,9 +32,12 @@ fn root_dir() -> PathBuf {
     {
         // Support cargo run and an executable launched directly from target/.
         let manifest = std::env::var_os("CARGO_MANIFEST_DIR").map(PathBuf::from);
-        if let Some(checkout) = manifest.as_deref().into_iter().chain(parent.ancestors()).find(|p| {
-            p.join("Cargo.toml").is_file() && p.join("bindings/actions.json").is_file()
-        }) {
+        if let Some(checkout) = manifest
+            .as_deref()
+            .into_iter()
+            .chain(parent.ancestors())
+            .find(|p| p.join("Cargo.toml").is_file() && p.join("bindings/actions.json").is_file())
+        {
             return checkout.to_path_buf();
         }
     }
@@ -46,6 +50,11 @@ fn save_settings(root: &Path, settings: &Settings) {
 }
 fn send(worker: &Worker, ui: &mut Ui, action: Action) {
     let play_key_sound = ui.settings.plays_key_sound(&action);
+    let action = if matches!(action, Action::Send) && ui.settings.translation.enabled {
+        Action::SendTranslated(ui.settings.translation.clone())
+    } else {
+        action
+    };
     match worker.input.try_send(action) {
         Ok(()) => {
             if play_key_sound {
@@ -80,6 +89,8 @@ fn activate(
             | UiAction::Block
             | UiAction::Narrow
             | UiAction::Widen
+            | UiAction::ToggleTranslation
+            | UiAction::Pick(_)
     );
     match action {
         UiAction::Input(action) => {
@@ -111,9 +122,37 @@ fn activate(
         }
         UiAction::Settings => {
             ui.settings_open = !ui.settings_open;
+            ui.choices = None;
             ui.expanded = false;
         }
-        UiAction::SettingsPage(general) => ui.settings_general = general,
+        UiAction::SettingsPage(page) => {
+            ui.settings_page = page;
+            ui.choices = None;
+        }
+        UiAction::ToggleTranslation => {
+            ui.settings.translation.enabled = !ui.settings.translation.enabled
+        }
+        UiAction::Choose(choice) => ui.choices = Some((choice, 0)),
+        UiAction::Pick(index) => ui.pick(index),
+        UiAction::ChoicePage(page) => {
+            if let Some((choice, _)) = ui.choices {
+                ui.choices = Some((choice, page));
+            }
+        }
+        UiAction::CloseChoices => ui.choices = None,
+        UiAction::ConfigureService => {
+            let result = std::env::current_exe().and_then(|exe| {
+                std::process::Command::new(exe)
+                    .args(["--translation-account", &ui.settings.translation.provider])
+                    .spawn()
+            });
+            ui.notice = if result.is_ok() {
+                "请在桌面窗口配置翻译服务"
+            } else {
+                "无法打开服务配置窗口"
+            }
+            .into();
+        }
         UiAction::CloseToTray => {
             ui.settings.close_to_tray = !ui.settings.close_to_tray;
             native.lifecycle_settings(ui.settings.close_to_tray);
@@ -167,6 +206,14 @@ fn activate(
 fn run() -> Result<(), String> {
     let args: Vec<String> = std::env::args().collect();
     let root = root_dir();
+    if let Some(index) = args.iter().position(|s| s == "--translation-account") {
+        let service = args
+            .get(index + 1)
+            .and_then(|s| translation::service(s))
+            .filter(|s| s.account())
+            .ok_or("未知翻译服务")?;
+        return translation::edit_account(service);
+    }
     if args.iter().any(|a| a == "--lifecycle-forward-check") {
         return Native::forward_check(args.iter().any(|a| a == "steam"));
     }
@@ -436,14 +483,14 @@ fn run() -> Result<(), String> {
             let acknowledged = state.sequence.saturating_sub(acknowledged_sequence);
             if acknowledged == 0
                 && state.neural_prediction
+                && state.translating == ui.state.translating
+                && state.recoverable == ui.state.recoverable
                 && (ui.pending > 0 || ui.candidate_targeted())
             {
                 deferred_neural = Some(state);
                 continue;
             }
-            if acknowledged > 0 {
-                deferred_neural = None;
-            }
+            deferred_neural = None;
             ui.pending = ui.pending.saturating_sub(acknowledged as usize);
             acknowledged_sequence = acknowledged_sequence.max(state.sequence);
             if candidate_revision != state.candidate_revision {
@@ -676,12 +723,17 @@ fn render_demo(resources: &Path, root: &Path) -> Result<(), String> {
     ui.render(&n);
     n.present()?;
     n.export(&out.join("native-settings-composing.png"))?;
-    ui.settings_general = false;
+    ui.settings_page = crate::ui::SettingsPage::Input;
     ui.rebuild();
     ui.render(&n);
     n.present()?;
     n.export(&out.join("native-settings-input.png"))?;
-    ui.settings_general = true;
+    ui.settings_page = crate::ui::SettingsPage::Translation;
+    ui.rebuild();
+    ui.render(&n);
+    n.present()?;
+    n.export(&out.join("native-settings-translation.png"))?;
+    ui.settings_page = crate::ui::SettingsPage::General;
     ui.settings_open = false;
     ui.symbols = true;
     ui.rebuild();

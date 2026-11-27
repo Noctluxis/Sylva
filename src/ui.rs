@@ -34,6 +34,7 @@ pub struct Settings {
     pub steamvr_startup: bool,
     pub close_to_tray: bool,
     pub silent_start: bool,
+    pub translation: crate::translation::Config,
 }
 // Version 0.1.12 saved a sound name in this field. New saves use a boolean.
 fn read_key_sound<'de, D: serde::Deserializer<'de>>(de: D) -> Result<bool, D::Error> {
@@ -65,6 +66,7 @@ impl Default for Settings {
             steamvr_startup: false,
             close_to_tray: true,
             silent_start: true,
+            translation: Default::default(),
         }
     }
 }
@@ -99,10 +101,51 @@ pub enum UiAction {
     Widen,
     Center,
     Copy,
-    SettingsPage(bool),
+    SettingsPage(SettingsPage),
+    ToggleTranslation,
+    Choose(Choice),
+    Pick(usize),
+    ChoicePage(usize),
+    CloseChoices,
+    ConfigureService,
     SteamVrStartup,
     CloseToTray,
     SilentStart,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingsPage {
+    General,
+    Input,
+    Translation,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Choice {
+    Service,
+    Source,
+    First,
+    Second,
+}
+impl Choice {
+    fn title(self) -> &'static str {
+        match self {
+            Self::Service => "翻译服务",
+            Self::Source => "原文语言",
+            Self::First => "第一译文",
+            Self::Second => "第二译文",
+        }
+    }
+    fn entries(self) -> Vec<(&'static str, &'static str)> {
+        use crate::translation::{LANGS, SERVICES};
+        if self == Self::Service {
+            return SERVICES.iter().map(|s| (s.id, s.name)).collect();
+        }
+        let mut list = Vec::new();
+        if self == Self::Second {
+            list.push(("", "无"));
+        }
+        list.extend_from_slice(LANGS);
+        list
+    }
 }
 #[derive(Clone)]
 pub struct Button {
@@ -132,7 +175,8 @@ pub struct Ui {
     pub expanded: bool,
     pub symbols: bool,
     pub settings_open: bool,
-    pub settings_general: bool,
+    pub settings_page: SettingsPage,
+    pub choices: Option<(Choice, usize)>,
     pub startup_pending: bool,
     pub page: usize,
     pub settings: Settings,
@@ -245,6 +289,170 @@ fn fit_text(text: &str, width: f32, size: f32) -> String {
     "…".into()
 }
 impl Ui {
+    fn choice_value(&self, choice: Choice) -> &str {
+        let c = &self.settings.translation;
+        match choice {
+            Choice::Service => &c.provider,
+            Choice::Source => &c.source,
+            Choice::First => &c.first,
+            Choice::Second => c.second.as_deref().unwrap_or(""),
+        }
+    }
+    fn available_choice(&self, choice: Choice, id: &str) -> bool {
+        let c = &self.settings.translation;
+        match choice {
+            Choice::Service | Choice::Source => true,
+            Choice::First => id != c.source && Some(id) != c.second.as_deref(),
+            Choice::Second => id != c.first && id != c.source,
+        }
+    }
+    pub fn pick(&mut self, index: usize) {
+        let Some((choice, _)) = self.choices else {
+            return;
+        };
+        let Some(&(id, _)) = choice.entries().get(index) else {
+            return;
+        };
+        if !self.available_choice(choice, id) {
+            return;
+        }
+        let c = &mut self.settings.translation;
+        match choice {
+            Choice::Service => c.provider = id.into(),
+            Choice::First => c.first = id.into(),
+            Choice::Second => c.second = (!id.is_empty()).then(|| id.to_owned()),
+            Choice::Source => {
+                if c.first == id {
+                    c.first = c.source.clone();
+                }
+                if c.second.as_deref() == Some(id) {
+                    c.second = Some(c.source.clone());
+                }
+                c.source = id.into();
+            }
+        }
+        self.choices = None;
+    }
+    fn translation_controls(&mut self) {
+        use crate::translation::{lang_name, service};
+        if let Some((choice, page)) = self.choices {
+            let entries = choice.entries();
+            let last = (entries.len() - 1) / 9;
+            let page = page.min(last);
+            let start = page * 9;
+            for (offset, &(id, name)) in entries.iter().skip(start).take(9).enumerate() {
+                self.button(
+                    450 + offset,
+                    36. + (offset % 3) as f32 * 292.,
+                    169. + (offset / 3) as f32 * 63.,
+                    280.,
+                    54.,
+                    name,
+                    "",
+                    UiAction::Pick(start + offset),
+                    self.choice_value(choice) == id,
+                    self.available_choice(choice, id),
+                    21.,
+                );
+            }
+            for (id, x, label, action, enabled) in [
+                (
+                    470,
+                    36.,
+                    "上一页",
+                    UiAction::ChoicePage(page.saturating_sub(1)),
+                    page > 0,
+                ),
+                (471, 328., "返回", UiAction::CloseChoices, true),
+                (
+                    472,
+                    620.,
+                    "下一页",
+                    UiAction::ChoicePage(page + 1),
+                    page < last,
+                ),
+            ] {
+                self.button(
+                    id, x, 371., 280., 52., label, "", action, false, enabled, 20.,
+                );
+            }
+            return;
+        }
+        let c = &self.settings.translation;
+        let enabled = c.enabled;
+        let service = service(&c.provider);
+        let rows = [
+            (
+                320,
+                36.,
+                170.,
+                "发送时翻译".to_owned(),
+                UiAction::ToggleTranslation,
+            ),
+            (
+                321,
+                480.,
+                170.,
+                format!("翻译服务　{}", service.map_or("请选择", |s| s.name)),
+                UiAction::Choose(Choice::Service),
+            ),
+            (
+                322,
+                36.,
+                246.,
+                format!("第一译文　{}", lang_name(&c.first)),
+                UiAction::Choose(Choice::First),
+            ),
+            (
+                323,
+                480.,
+                246.,
+                format!("第二译文　{}", lang_name(c.second.as_deref().unwrap_or(""))),
+                UiAction::Choose(Choice::Second),
+            ),
+            (
+                324,
+                36.,
+                322.,
+                format!("原文语言　{}", lang_name(&c.source)),
+                UiAction::Choose(Choice::Source),
+            ),
+        ];
+        for (id, x, y, label, action) in rows {
+            self.button(
+                id,
+                x,
+                y,
+                426.,
+                60.,
+                &label,
+                if id == 320 {
+                    if enabled { "开启" } else { "关闭" }
+                } else {
+                    ""
+                },
+                action,
+                id == 320 && enabled,
+                true,
+                21.,
+            );
+        }
+        if service.is_some_and(|s| s.account()) {
+            self.button(
+                325,
+                480.,
+                322.,
+                426.,
+                60.,
+                "配置服务（桌面）",
+                "",
+                UiAction::ConfigureService,
+                false,
+                true,
+                21.,
+            );
+        }
+    }
     pub fn new(settings: Settings, vr: bool, osc_enabled: bool) -> Self {
         Self {
             line: DraftLine::default(),
@@ -257,7 +465,8 @@ impl Ui {
             expanded: false,
             symbols: false,
             settings_open: false,
-            settings_general: true,
+            settings_page: SettingsPage::General,
+            choices: None,
             startup_pending: false,
             page: 0,
             settings,
@@ -399,18 +608,24 @@ impl Ui {
             self.state.ready && (!self.state.draft.is_empty() || !self.state.preedit.is_empty()),
             20.,
         );
+        let restore =
+            self.state.recoverable && self.state.draft.is_empty() && self.state.preedit.is_empty();
         self.button(
             112,
             908.,
             23.,
             100.,
             64.,
-            "发送",
+            if restore { "取回上条" } else { "发送" },
             "",
-            UiAction::Input(Action::Send),
+            UiAction::Input(if restore {
+                Action::RestoreUnsent
+            } else {
+                Action::Send
+            }),
             true,
-            self.state.can_send() && self.pending == 0,
-            23.,
+            (restore || self.state.can_send()) && self.pending == 0,
+            if restore { 18. } else { 23. },
         );
         self.button(
             200,
@@ -452,23 +667,31 @@ impl Ui {
             18.,
         );
         if self.settings_open {
-            for (id, x, label, general) in [(313, 36., "常规", true), (314, 260., "输入", false)]
-            {
+            for (id, x, label, page) in [
+                (313, 36., "常规", SettingsPage::General),
+                (314, 186., "输入", SettingsPage::Input),
+                (316, 336., "翻译", SettingsPage::Translation),
+            ] {
                 self.button(
                     id,
                     x,
                     110.,
-                    216.,
+                    140.,
                     44.,
                     label,
                     "",
-                    UiAction::SettingsPage(general),
-                    self.settings_general == general,
+                    UiAction::SettingsPage(page),
+                    self.settings_page == page,
                     true,
                     22.,
                 );
             }
-            let controls = if self.settings_general {
+            if self.settings_page == SettingsPage::Translation {
+                self.translation_controls();
+                return;
+            }
+            let general = self.settings_page == SettingsPage::General;
+            let controls = if general {
                 vec![
                     (
                         310,
@@ -512,13 +735,13 @@ impl Ui {
                 self.button(
                     id,
                     36.,
-                    if self.settings_general {
+                    if general {
                         168. + i as f32 * 68.
                     } else {
                         164. + i as f32 * 56.
                     },
                     440.,
-                    if self.settings_general { 60. } else { 50. },
+                    if general { 60. } else { 50. },
                     label,
                     if id == 310 && self.startup_pending {
                         "处理中"
@@ -747,10 +970,16 @@ impl Ui {
         );
         let status = if !self.notice.is_empty() {
             self.notice.as_str()
+        } else if self.state.translating {
+            "正在翻译，可继续输入下一句"
         } else if !self.state.status.is_empty() && self.state.status != "水杉已就绪" {
             self.state.status.as_str()
         } else {
-            ""
+            if self.state.recoverable {
+                "上条未发送，草稿空白时可取回"
+            } else {
+                ""
+            }
         };
         n.text(
             &fit_text(status, 565., 13.),
@@ -776,7 +1005,7 @@ impl Ui {
         }
         if self.settings_open {
             n.rect(16., 100., 916., 356., 10., key, border);
-            if self.settings_general {
+            if self.settings_page == SettingsPage::General {
                 n.text(
                     "静默启动时隐藏窗口和 VR 面板",
                     36.,
@@ -798,89 +1027,118 @@ impl Ui {
                     0,
                 );
             }
-            n.text("悬浮宽度", 554., 114., 300., 28., 18., muted, 0);
-            n.text(
-                &format!("{:.0} cm", self.settings.width_m * 100.),
-                554.,
-                144.,
-                280.,
-                44.,
-                30.,
-                ink,
-                0,
-            );
-            n.text(
-                &format!("OSC  {}", self.settings.osc_address),
-                514.,
-                294.,
-                400.,
-                26.,
-                15.,
-                muted,
-                0,
-            );
-            n.text(
-                &fit_text(&self.runtime_status, 400., 12.),
-                514.,
-                322.,
-                400.,
-                24.,
-                12.,
-                muted,
-                0,
-            );
-            n.text(
-                if self.state.neural_status.is_empty() {
-                    "智能联想已开启"
-                } else {
-                    &self.state.neural_status
-                },
-                514.,
-                343.,
-                400.,
-                22.,
-                12.,
-                muted,
-                0,
-            );
-            n.text(
-                "防止游戏误触需 SteamVR 实验选项",
-                514.,
-                363.,
-                400.,
-                20.,
-                12.,
-                muted,
-                0,
-            );
-            n.text(
-                "Experimental overlay input overrides",
-                514.,
-                384.,
-                400.,
-                18.,
-                11.,
-                muted,
-                0,
-            );
-            n.text(
-                &format!(
-                    "Sylva · {}{}",
-                    env!("CARGO_PKG_VERSION"),
-                    if self.osc_enabled {
-                        ""
+            if self.settings_page != SettingsPage::Translation {
+                n.text("悬浮宽度", 554., 114., 300., 28., 18., muted, 0);
+                n.text(
+                    &format!("{:.0} cm", self.settings.width_m * 100.),
+                    554.,
+                    144.,
+                    280.,
+                    44.,
+                    30.,
+                    ink,
+                    0,
+                );
+                n.text(
+                    &format!("OSC  {}", self.settings.osc_address),
+                    514.,
+                    294.,
+                    400.,
+                    26.,
+                    15.,
+                    muted,
+                    0,
+                );
+                n.text(
+                    &fit_text(&self.runtime_status, 400., 12.),
+                    514.,
+                    322.,
+                    400.,
+                    24.,
+                    12.,
+                    muted,
+                    0,
+                );
+                n.text(
+                    if self.state.neural_status.is_empty() {
+                        "智能联想已开启"
                     } else {
-                        " · OSC 已关闭"
-                    }
-                ),
-                514.,
-                429.,
-                400.,
-                18.,
-                11.,
-                muted,
-                0,
-            );
+                        &self.state.neural_status
+                    },
+                    514.,
+                    343.,
+                    400.,
+                    22.,
+                    12.,
+                    muted,
+                    0,
+                );
+                n.text(
+                    "防止游戏误触需 SteamVR 实验选项",
+                    514.,
+                    363.,
+                    400.,
+                    20.,
+                    12.,
+                    muted,
+                    0,
+                );
+                n.text(
+                    "Experimental overlay input overrides",
+                    514.,
+                    384.,
+                    400.,
+                    18.,
+                    11.,
+                    muted,
+                    0,
+                );
+                n.text(
+                    &format!(
+                        "Sylva · {}{}",
+                        env!("CARGO_PKG_VERSION"),
+                        if self.osc_enabled {
+                            ""
+                        } else {
+                            " · OSC 已关闭"
+                        }
+                    ),
+                    514.,
+                    429.,
+                    400.,
+                    18.,
+                    11.,
+                    muted,
+                    0,
+                );
+            } else if let Some((choice, page)) = self.choices {
+                n.text(
+                    &format!(
+                        "{}　{} / {}",
+                        choice.title(),
+                        page + 1,
+                        choice.entries().len().div_ceil(9)
+                    ),
+                    514.,
+                    114.,
+                    380.,
+                    30.,
+                    18.,
+                    muted,
+                    0,
+                );
+            } else {
+                n.text(
+                    "发送时翻译，原文和译文各占一行",
+                    36.,
+                    414.,
+                    700.,
+                    28.,
+                    17.,
+                    muted,
+                    0,
+                );
+            }
         }
         if self.expanded && !self.settings_open {
             n.text(
@@ -1123,6 +1381,40 @@ mod tests {
         }
     }
     #[test]
+    fn translation_pages_fit_and_remember_distinct_languages() {
+        let mut ui = ready();
+        ui.settings_open = true;
+        ui.settings_page = SettingsPage::Translation;
+        assert!(!ui.settings.translation.enabled);
+        assert_eq!(ui.settings.translation.provider, "edge");
+        for choice in [
+            Choice::Service,
+            Choice::Source,
+            Choice::First,
+            Choice::Second,
+        ] {
+            for page in 0..choice.entries().len().div_ceil(9) {
+                ui.choices = Some((choice, page));
+                ui.rebuild();
+                assert_geometry(&ui);
+            }
+        }
+        ui.choices = Some((Choice::Second, 0));
+        let idx = Choice::Second
+            .entries()
+            .iter()
+            .position(|l| l.0 == "ja")
+            .unwrap();
+        ui.pick(idx);
+        assert_eq!(ui.settings.translation.second.as_deref(), Some("ja"));
+        ui.choices = Some((Choice::Source, 0));
+        ui.pick(2);
+        assert_eq!(ui.settings.translation.source, "ja");
+        assert_eq!(ui.settings.translation.second.as_deref(), Some("zh-CN"));
+        ui.rebuild();
+        assert_geometry(&ui);
+    }
+    #[test]
     fn layers_preserve_positions_and_change_the_actual_key_actions() {
         let mut ui = ready();
         let keys: Vec<_> = ui
@@ -1177,7 +1469,7 @@ mod tests {
                 .iter()
                 .any(|b| matches!(b.action, UiAction::SteamVrStartup) && !b.accent)
         );
-        ui.settings_general = false;
+        ui.settings_page = crate::ui::SettingsPage::Input;
         ui.rebuild();
         assert!(
             ui.buttons

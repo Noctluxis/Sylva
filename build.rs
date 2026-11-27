@@ -74,8 +74,9 @@ fn main() {
     fs::write(
         &rc,
         format!(
-            "101 ICON \"{}\"\n",
-            icon.display().to_string().replace('\\', "/")
+            "101 ICON \"{}\"\n{}",
+            icon.display().to_string().replace('\\', "/"),
+            include_str!("native/translation.rc")
         ),
     )
     .unwrap();
@@ -103,6 +104,7 @@ fn main() {
         .cpp(true)
         .file("native/backend.cpp")
         .file("native/key_audio.cpp")
+        .file("native/translation.cpp")
         .file("native/panel_input_tests.cpp")
         .include("vendor")
         .include(icon_include)
@@ -125,10 +127,15 @@ fn main() {
         "imm32",
         "windowscodecs",
         "psapi",
+        "winhttp",
+        "advapi32",
+        "bcrypt",
     ] {
         println!("cargo:rustc-link-lib={lib}");
     }
     println!("cargo:rerun-if-changed=native/backend.cpp");
+    println!("cargo:rerun-if-changed=native/translation.cpp");
+    println!("cargo:rerun-if-changed=native/translation.rc");
     println!("cargo:rerun-if-changed=native/key_audio.cpp");
     println!("cargo:rerun-if-changed=native/lifecycle.h");
     println!("cargo:rerun-if-changed=native/panel_geometry.h");

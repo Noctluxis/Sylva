@@ -26,7 +26,7 @@ pub fn feedback_check(root: &Path) -> Result<(), String> {
         let mut ui = Ui::new(Settings::default(), true, false);
         ui.state.ready = true;
         ui.settings_open = name == "settings-hover";
-        ui.settings_general = false;
+        ui.settings_page = crate::ui::SettingsPage::Input;
         if name == "candidate-hover" {
             ui.state.candidates = vec!["我们一起去玩吧".into(), "你好".into(), "明天见".into()];
         }
@@ -97,14 +97,14 @@ pub fn check(resources: &Path, root: &Path) -> Result<(), String> {
             }
             21 => {
                 ui.settings_open = true;
-                ui.settings_general = false;
+                ui.settings_page = crate::ui::SettingsPage::Input;
             }
             22 => {
                 ui.settings.typing_indicator = true;
                 ui.settings.haptics = false;
             }
             23 => {
-                ui.settings_general = true;
+                ui.settings_page = crate::ui::SettingsPage::General;
                 ui.settings.close_to_tray = false;
                 ui.settings.silent_start = false;
                 ui.settings.typing_indicator = false;
