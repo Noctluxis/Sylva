@@ -366,6 +366,55 @@ impl Drop for Native {
 mod tests {
     use crate::ui::{HEIGHT, Settings, Ui};
     type Matrix = [[f32; 4]; 3];
+
+    unsafe extern "C" {
+        fn check_panel_trigger_capture() -> i32;
+        fn check_panel_grip_dwell() -> i32;
+        fn check_settle_panel(pose: *mut Matrix) -> bool;
+    }
+
+    #[test]
+    fn vr_trigger_stays_captured_to_release_only_if_pressed_on_panel() {
+        assert_eq!(unsafe { check_panel_trigger_capture() }, 0);
+    }
+
+    #[test]
+    fn vr_grip_needs_a_continuous_hold_without_delaying_typing() {
+        assert_eq!(unsafe { check_panel_grip_dwell() }, 0);
+    }
+
+    #[test]
+    fn dropping_panel_only_removes_small_angles_and_preserves_position() {
+        fn tilted(pitch: f32, roll: f32) -> Matrix {
+            let mut p = pose(1.2, pitch.to_radians());
+            let (s, c) = roll.to_radians().sin_cos();
+            for row in &mut p {
+                let (x, y) = (row[0], row[1]);
+                row[0] = x * c + y * s;
+                row[1] = y * c - x * s;
+            }
+            p
+        }
+        for (pitch, roll, expected_pitch, expected_roll, snap) in [
+            (4., -5., 0., 0., true),
+            (-12., 5., -12., 0., true),
+            (-5., -20., 0., -20., true),
+            (12., 20., 12., 20., false),
+            (90., 3., 90., 3., false),
+            (0., 0., 0., 0., false),
+        ] {
+            let mut panel = tilted(pitch, roll);
+            let original = panel;
+            let expected = tilted(expected_pitch, expected_roll);
+            assert_eq!(unsafe { check_settle_panel(&mut panel) }, snap);
+            for (i, row) in panel.iter().enumerate() {
+                assert_eq!(row[3], original[i][3]);
+                for axis in 0..3 {
+                    assert!((row[axis] - expected[i][axis]).abs() < 0.00001);
+                }
+            }
+        }
+    }
     unsafe extern "C" {
         fn native_swap_new() -> *mut std::ffi::c_void;
         fn native_swap_delete(p: *mut std::ffi::c_void);

@@ -30,6 +30,7 @@
 #include <psapi.h>
 #include "openvr.h"
 #include "panel_geometry.h"
+#include "panel_input.h"
 #include "key_feedback.h"
 #include "graphics_metrics.h"
 #include "frame_budget.h"
@@ -68,7 +69,8 @@ static HWND window;
 static std::string actionManifest;
 static bool vrInitialized=false;
 static bool vrReady=false, visible=true, placed=false, offscreen=false,hiddenProbe=false;
-static bool priorClick[2]{}, priorGrab[2]{}, armed[2]{};
+static sylva::PanelButtons panelButtons[2];
+static bool armed[2]{};
 static int grabHand=-1;
 static vr::HmdMatrix34_t panel{}, grabOffset{};
 static vr::VROverlayHandle_t overlay=0, cursors[2]{};
@@ -191,7 +193,7 @@ static void showCursor(int i,bool show) {
     if(show)vr::VROverlay()->ShowOverlay(cursors[i]);else vr::VROverlay()->HideOverlay(cursors[i]);
     cursorVisible[i]=show;
 }
-static void updateKeyFeedback(int hand,const sylva::PanelHit& hit,bool down){
+static void updateKeyFeedback(int hand,const sylva::PanelHit& hit,bool pressedHere){
     KeyRegion region{};
     if(hit.hit&&grabHand<0&&textureReady.load()&&feedbackLoaded(hand)){
         std::lock_guard<std::mutex> lock(regionsMutex);
@@ -200,7 +202,7 @@ static void updateKeyFeedback(int hand,const sylva::PanelHit& hit,bool down){
     std::array<sylva::FeedbackSlice,3> slices{};
     if(region.w<=0||!sylva::feedbackSlices(panel,panelWidth,region.x,region.y,region.w,region.h,slices)){hideKeyFeedback(hand);return;}
     auto now=std::chrono::steady_clock::now();
-    if(down&&!priorClick[hand]){flashRegion[hand]=region;flashUntil[hand]=now+std::chrono::milliseconds(100);}
+    if(pressedHere){flashRegion[hand]=region;flashUntil[hand]=now+std::chrono::milliseconds(100);}
     bool pressed=now<flashUntil[hand]&&region.x==flashRegion[hand].x&&region.y==flashRegion[hand].y&&region.w==flashRegion[hand].w&&region.h==flashRegion[hand].h;
     // The feedback image is uploaded once at startup, just like the cursor.
     // Hover/press changes only transform/color/alpha, never pixels or UI draw.
@@ -222,7 +224,7 @@ static void updateKeyFeedback(int hand,const sylva::PanelHit& hit,bool down){
 }
 static void resetHands() {
     grabHand=-1;
-    for(int i=0;i<2;i++){armed[i]=false;priorClick[i]=priorGrab[i]=false;flashUntil[i]={};queueEvent({7,i,0,0,0});showCursor(i,false);}
+    for(int i=0;i<2;i++){armed[i]=false;panelButtons[i]={};flashUntil[i]={};queueEvent({7,i,0,0,0});showCursor(i,false);}
 }
 static bool recenter() {
     if(!vrReady)return false;
@@ -457,7 +459,7 @@ static void pollPanelEvents(){
     if(loadedImageSlot>=0&&panelTextureAvailable(loadedImageSlot)){rawSwap.loaded(loadedImageSlot);loadedImageSlot=-1;}
     if(hiddenProbe&&rawSwap.loading()>=0){int front=rawSwap.front();if(front>=0){frontChecks++;if(!panelTextureAvailable(front))frontMissing++;}}
 }
-static void vrPoll(){
+static void vrPoll(std::chrono::steady_clock::time_point now){
     if(!vrReady)return;
     vr::VREvent_t imageEvent{};
     for(auto cursor:cursors)if(cursor)while(vr::VROverlay()->PollNextOverlayEvent(cursor,&imageEvent,sizeof(imageEvent))){}
@@ -489,7 +491,14 @@ static void vrPoll(){
         rays[i]=cached.valid?mul(handPose[i],cached.transform):handPose[i];
         hits[i]=sylva::intersectPanel(panel,panelWidth,rays[i]);
     }
-    vr::VRActiveActionSet_t set{};set.ulActionSet=actions;set.nPriority=(blockInput && visible && !dashboard && (hits[0].hit||hits[1].hit||grabHand>=0))?0x01FFFFFF:0;
+    // OpenVR needs the priority before it supplies this frame's button edges.
+    // A press that began on the panel therefore protects its release frame too.
+    const bool ownsInput = (valid[0] && panelButtons[0].ownsInput(hits[0].hit)) ||
+                           (valid[1] && panelButtons[1].ownsInput(hits[1].hit)) ||
+                           (grabHand >= 0 && valid[grabHand]);
+    vr::VRActiveActionSet_t set{};set.ulActionSet=actions;
+    if (blockInput && visible && placed && !dashboard && ownsInput)
+        set.nPriority = vr::k_nActionSetOverlayGlobalPriorityMax;
     auto update=vr::VRInput()->UpdateActionState(&set,sizeof(set),1);
     if(update!=vr::VRInputError_None){resetHands();return;}
     vr::InputDigitalActionData_t toggle{};
@@ -509,24 +518,38 @@ static void vrPoll(){
     for(int i=0;i<2;i++){
         auto& c=clicks[i];auto& g=grabs[i];
         vr::VRInput()->GetDigitalActionData(clickAction,&c,sizeof(c),hands[i]);vr::VRInput()->GetDigitalActionData(grabAction,&g,sizeof(g),hands[i]);
-        if(!valid[i]||!visible||dashboard||!placed||!c.bActive||!g.bActive){if(armed[i])queueEvent({7,i,0,0,0});armed[i]=false;priorClick[i]=priorGrab[i]=false;if(grabHand==i)grabHand=-1;showCursor(i,false);continue;}
+        if(!valid[i]||!visible||dashboard||!placed||!c.bActive||!g.bActive){if(armed[i])queueEvent({7,i,0,0,0});armed[i]=false;panelButtons[i]={};if(grabHand==i)grabHand=-1;showCursor(i,false);continue;}
         if(!armed[i]){if(!c.bState&&!g.bState)armed[i]=true;continue;}
         active[i]=true;
-        if(g.bState && !priorGrab[i] && hits[i].hit && grabHand<0){grabHand=i;grabOffset=mul(inverse(handPose[i]),panel);for(int j=0;j<2;j++)queueEvent({7,j,0,0,0});}
-        if(grabHand==i){if(g.bState){panel=mul(handPose[i],grabOffset);panelTransform();}else grabHand=-1;}
+        if (panelButtons[i].startGrab(g.bState, hits[i].hit && grabHand < 0, now)) {
+            grabHand = i;
+            grabOffset = mul(inverse(handPose[i]), panel);
+            for (int j = 0; j < 2; ++j) queueEvent({7,j,0,0,0});
+        }
+        if (grabHand == i) {
+            if (g.bState) {
+                panel = mul(handPose[i], grabOffset);
+                panelTransform();
+            } else {
+                grabHand = -1;
+                if (sylva::settlePanel(panel)) panelTransform();
+            }
+        }
     }
     // Recompute both hands after moving the panel; neither cursor uses last frame's plane.
     for(int i=0;i<2;i++){
         if(!active[i])continue;
-        auto& c=clicks[i];auto& g=grabs[i];
         auto hit=sylva::intersectPanel(panel,panelWidth,rays[i]);
         float x=hit.x,y=hit.y;
-        updateKeyFeedback(i,hit,c.bState);
+        const auto edge = panelButtons[i].trigger(clicks[i].bState, hit.hit);
+        updateKeyFeedback(i,hit,edge == sylva::TriggerEdge::press);
         queueEvent({2,i,x,y,0});
-        if(grabHand<0){if(c.bState&&!priorClick[i]&&hit.hit)queueEvent({3,i,x,y,0});if(!c.bState&&priorClick[i])queueEvent({4,i,x,y,0});}
+        if (grabHand < 0) {
+            if (edge == sylva::TriggerEdge::press) queueEvent({3,i,x,y,0});
+            if (edge == sylva::TriggerEdge::release) queueEvent({4,i,x,y,0});
+        }
         if(hit.hit&&cursors[i]){auto cursor=panel;for(int j=0;j<3;j++)cursor.m[j][3]=hit.point.v[j]+panel.m[j][2]*.0005f;vr::VROverlay()->SetOverlayTransformAbsolute(cursors[i],vr::TrackingUniverseStanding,&cursor);}
         showCursor(i,hit.hit);
-        priorClick[i]=c.bState;priorGrab[i]=g.bState;
     }
 }
 static void vrLoop(){
@@ -537,7 +560,7 @@ static void vrLoop(){
         if(width!=panelWidth){panelWidth=width;panelWidthSetting();}
         blockInput=requestedBlock.load();
         if(recenterRequested.exchange(false)){recenter();resetHands();}
-        vrPoll();
+        vrPoll(begin);
         auto feedback=feedbackHands.exchange(0);
         if(requestedHaptics.load()&&visible&&!dashboardVisible&&hapticAction)for(int i=0;i<2;i++)if(feedback&(1u<<i))vr::VRInput()->TriggerHapticVibrationAction(hapticAction,0,.018f,120.f,.25f,hands[i]);
         presentPanel(visible&&placed);

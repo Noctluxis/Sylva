@@ -103,6 +103,7 @@ fn main() {
         .cpp(true)
         .file("native/backend.cpp")
         .file("native/key_audio.cpp")
+        .file("native/panel_input_tests.cpp")
         .include("vendor")
         .include(icon_include)
         .flag("/std:c++17")
@@ -131,6 +132,8 @@ fn main() {
     println!("cargo:rerun-if-changed=native/key_audio.cpp");
     println!("cargo:rerun-if-changed=native/lifecycle.h");
     println!("cargo:rerun-if-changed=native/panel_geometry.h");
+    println!("cargo:rerun-if-changed=native/panel_input.h");
+    println!("cargo:rerun-if-changed=native/panel_input_tests.cpp");
     println!("cargo:rerun-if-changed=native/key_feedback.h");
     println!("cargo:rerun-if-changed=native/graphics_metrics.h");
     println!("cargo:rerun-if-changed=native/frame_budget.h");
