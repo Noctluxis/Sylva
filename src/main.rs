@@ -78,6 +78,13 @@ fn activate(
     root: &Path,
     startup: &mut Option<startup::Task>,
 ) {
+    if ui.in_profile() {
+        if let UiAction::Profile(action) = action {
+            ui.profile_action(action);
+            ui.rebuild();
+        }
+        return;
+    }
     let settings_changed = matches!(
         action,
         UiAction::CloseToTray
@@ -91,6 +98,7 @@ fn activate(
             | UiAction::Widen
             | UiAction::ToggleTranslation
             | UiAction::Pick(_)
+            | UiAction::PickService(_)
     );
     match action {
         UiAction::Input(action) => {
@@ -134,25 +142,22 @@ fn activate(
         }
         UiAction::Choose(choice) => ui.choices = Some((choice, 0)),
         UiAction::Pick(index) => ui.pick(index),
+        UiAction::PickService(id) => {
+            if let Some((ui::Choice::Service(group), _)) = ui.choices
+                && translation::service(id).is_some_and(|s| s.group() == group)
+            {
+                ui.settings.translation.provider = id.to_owned();
+                ui.choices = None;
+            }
+        }
         UiAction::ChoicePage(page) => {
             if let Some((choice, _)) = ui.choices {
                 ui.choices = Some((choice, page));
             }
         }
         UiAction::CloseChoices => ui.choices = None,
-        UiAction::ConfigureService => {
-            let result = std::env::current_exe().and_then(|exe| {
-                std::process::Command::new(exe)
-                    .args(["--translation-account", &ui.settings.translation.provider])
-                    .spawn()
-            });
-            ui.notice = if result.is_ok() {
-                "请在桌面窗口配置翻译服务"
-            } else {
-                "无法打开服务配置窗口"
-            }
-            .into();
-        }
+        UiAction::ConfigureService => ui.open_profile(),
+        UiAction::Profile(_) => return,
         UiAction::CloseToTray => {
             ui.settings.close_to_tray = !ui.settings.close_to_tray;
             native.lifecycle_settings(ui.settings.close_to_tray);
@@ -206,14 +211,6 @@ fn activate(
 fn run() -> Result<(), String> {
     let args: Vec<String> = std::env::args().collect();
     let root = root_dir();
-    if let Some(index) = args.iter().position(|s| s == "--translation-account") {
-        let service = args
-            .get(index + 1)
-            .and_then(|s| translation::service(s))
-            .filter(|s| s.account())
-            .ok_or("未知翻译服务")?;
-        return translation::edit_account(service);
-    }
     if args.iter().any(|a| a == "--lifecycle-forward-check") {
         return Native::forward_check(args.iter().any(|a| a == "steam"));
     }
@@ -390,6 +387,11 @@ fn run() -> Result<(), String> {
                     }
                     dirty = true;
                 }
+                5 | 11 if ui.in_profile() => {
+                    ui.profile_keyboard(e.value, e.kind == 11);
+                    ui.rebuild();
+                    dirty = true;
+                }
                 5 => {
                     let action = match e.value {
                         8 => Some(Action::Backspace),
@@ -431,6 +433,9 @@ fn run() -> Result<(), String> {
                 }
                 _ => {}
             }
+        }
+        if ui.poll_profile() {
+            dirty = true;
         }
         if let Some(task) = &startup_task {
             if let Some(result) = task.poll() {
@@ -474,7 +479,16 @@ fn run() -> Result<(), String> {
                 }
             }
             if pointers[h].repeat(ui.hover[h], Instant::now()) {
-                send(&worker, &mut ui, Action::Backspace);
+                match ui.hover[h].and_then(|id| ui.action(id, 0., 0.)) {
+                    Some(UiAction::Profile(ui::ProfileAction::Backspace)) => {
+                        ui.profile_action(ui::ProfileAction::Backspace);
+                        ui.rebuild();
+                    }
+                    Some(UiAction::Input(Action::Backspace)) => {
+                        send(&worker, &mut ui, Action::Backspace)
+                    }
+                    _ => {}
+                }
                 dirty = true;
             }
         }
@@ -555,6 +569,7 @@ fn run() -> Result<(), String> {
             save_settings(&root, &ui.settings);
         }
     }
+    ui.finish_profile_save();
     drop(worker);
     drop(native);
     Ok(())
@@ -733,6 +748,24 @@ fn render_demo(resources: &Path, root: &Path) -> Result<(), String> {
     ui.render(&n);
     n.present()?;
     n.export(&out.join("native-settings-translation.png"))?;
+    ui.choices = Some((ui::Choice::Service(translation::Group::Model), 0));
+    ui.rebuild();
+    ui.render(&n);
+    n.present()?;
+    n.export(&out.join("native-translation-services.png"))?;
+    ui.choices = None;
+    ui.preview_profile();
+    ui.rebuild();
+    ui.render(&n);
+    n.present()?;
+    n.export(&out.join("native-translation-profile.png"))?;
+    ui.profile_action(ui::ProfileAction::Focus(translation::Field::Base));
+    ui.rebuild();
+    ui.render(&n);
+    n.present()?;
+    n.export(&out.join("native-translation-field.png"))?;
+    ui.profile_action(ui::ProfileAction::Back);
+    ui.profile_action(ui::ProfileAction::Back);
     ui.settings_page = crate::ui::SettingsPage::General;
     ui.settings_open = false;
     ui.symbols = true;

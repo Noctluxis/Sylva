@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
+mod profile;
+use crate::translation::Group;
 use crate::{
     engine::{Action, Snapshot},
     native::{Icon, Native},
 };
+pub use profile::ProfileAction;
 use serde::{Deserialize, Serialize};
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -105,9 +108,11 @@ pub enum UiAction {
     ToggleTranslation,
     Choose(Choice),
     Pick(usize),
+    PickService(&'static str),
     ChoicePage(usize),
     CloseChoices,
     ConfigureService,
+    Profile(ProfileAction),
     SteamVrStartup,
     CloseToTray,
     SilentStart,
@@ -120,7 +125,7 @@ pub enum SettingsPage {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Choice {
-    Service,
+    Service(Group),
     Source,
     First,
     Second,
@@ -128,7 +133,7 @@ pub enum Choice {
 impl Choice {
     fn title(self) -> &'static str {
         match self {
-            Self::Service => "翻译服务",
+            Self::Service(_) => "翻译服务",
             Self::Source => "原文语言",
             Self::First => "第一译文",
             Self::Second => "第二译文",
@@ -136,8 +141,12 @@ impl Choice {
     }
     fn entries(self) -> Vec<(&'static str, &'static str)> {
         use crate::translation::{LANGS, SERVICES};
-        if self == Self::Service {
-            return SERVICES.iter().map(|s| (s.id, s.name)).collect();
+        if let Self::Service(group) = self {
+            return SERVICES
+                .iter()
+                .filter(|s| s.group() == group)
+                .map(|s| (s.id, s.name))
+                .collect();
         }
         let mut list = Vec::new();
         if self == Self::Second {
@@ -177,6 +186,7 @@ pub struct Ui {
     pub settings_open: bool,
     pub settings_page: SettingsPage,
     pub choices: Option<(Choice, usize)>,
+    profile: Option<profile::Profile>,
     pub startup_pending: bool,
     pub page: usize,
     pub settings: Settings,
@@ -292,7 +302,7 @@ impl Ui {
     fn choice_value(&self, choice: Choice) -> &str {
         let c = &self.settings.translation;
         match choice {
-            Choice::Service => &c.provider,
+            Choice::Service(_) => &c.provider,
             Choice::Source => &c.source,
             Choice::First => &c.first,
             Choice::Second => c.second.as_deref().unwrap_or(""),
@@ -301,7 +311,7 @@ impl Ui {
     fn available_choice(&self, choice: Choice, id: &str) -> bool {
         let c = &self.settings.translation;
         match choice {
-            Choice::Service | Choice::Source => true,
+            Choice::Service(_) | Choice::Source => true,
             Choice::First => id != c.source && Some(id) != c.second.as_deref(),
             Choice::Second => id != c.first && id != c.source,
         }
@@ -318,7 +328,7 @@ impl Ui {
         }
         let c = &mut self.settings.translation;
         match choice {
-            Choice::Service => c.provider = id.into(),
+            Choice::Service(_) => c.provider = id.into(),
             Choice::First => c.first = id.into(),
             Choice::Second => c.second = (!id.is_empty()).then(|| id.to_owned()),
             Choice::Source => {
@@ -337,6 +347,57 @@ impl Ui {
         use crate::translation::{lang_name, service};
         if let Some((choice, page)) = self.choices {
             let entries = choice.entries();
+            if let Choice::Service(group) = choice {
+                for (index, g) in Group::ALL.into_iter().enumerate() {
+                    self.button(
+                        400 + index,
+                        34.,
+                        168. + index as f32 * 66.,
+                        207.,
+                        56.,
+                        g.label(),
+                        "",
+                        UiAction::Choose(Choice::Service(g)),
+                        g == group,
+                        true,
+                        20.,
+                    );
+                }
+                for (i, (index, s)) in crate::translation::SERVICES
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, s)| s.group() == group)
+                    .enumerate()
+                {
+                    self.button(
+                        410 + index,
+                        263. + (i % 3) as f32 * 218.,
+                        168. + (i / 3) as f32 * 66.,
+                        208.,
+                        56.,
+                        s.name,
+                        "",
+                        UiAction::PickService(s.id),
+                        self.choice_value(choice) == s.id,
+                        true,
+                        20.,
+                    );
+                }
+                self.button(
+                    471,
+                    788.,
+                    110.,
+                    116.,
+                    44.,
+                    "返回",
+                    "",
+                    UiAction::CloseChoices,
+                    false,
+                    true,
+                    19.,
+                );
+                return;
+            }
             let last = (entries.len() - 1) / 9;
             let page = page.min(last);
             let start = page * 9;
@@ -394,7 +455,7 @@ impl Ui {
                 480.,
                 170.,
                 format!("翻译服务　{}", service.map_or("请选择", |s| s.name)),
-                UiAction::Choose(Choice::Service),
+                UiAction::Choose(Choice::Service(service.map_or(Group::Free, |s| s.group()))),
             ),
             (
                 322,
@@ -444,7 +505,7 @@ impl Ui {
                 322.,
                 426.,
                 60.,
-                "配置服务（桌面）",
+                "配置 API",
                 "",
                 UiAction::ConfigureService,
                 false,
@@ -467,6 +528,7 @@ impl Ui {
             settings_open: false,
             settings_page: SettingsPage::General,
             choices: None,
+            profile: None,
             startup_pending: false,
             page: 0,
             settings,
@@ -541,8 +603,12 @@ impl Ui {
         );
     }
     pub fn rebuild(&mut self) {
-        self.line.update(&self.state);
         self.buttons.clear();
+        if self.profile.is_some() {
+            self.profile_controls();
+            return;
+        }
+        self.line.update(&self.state);
         if !self.settings_open {
             let expanded = self.expanded;
             let pages = candidate_pages(&self.state.candidates, expanded);
@@ -892,7 +958,8 @@ impl Ui {
         }
     }
     pub fn hit(&self, x: f32, y: f32) -> Option<usize> {
-        if self.pending == 0
+        if self.profile.is_none()
+            && self.pending == 0
             && !self.state.draft.is_empty()
             && (18.0..754.).contains(&x)
             && (40.0..89.).contains(&y)
@@ -916,6 +983,9 @@ impl Ui {
             })
     }
     pub fn action(&self, id: usize, x: f32, y: f32) -> Option<UiAction> {
+        if id == profile::VALUE_BUTTON {
+            return self.profile_caret(x, y);
+        }
         if id == DRAFT_FIELD {
             let [left, top, width, height] = DRAFT_BOUNDS;
             let displayed =
@@ -942,215 +1012,222 @@ impl Ui {
         let hint = if dark { 0xff9eafa4 } else { 0xff8a9a91 };
         let border = if dark { 0xff46554c } else { 0xffd8e0da };
         n.begin(bg);
-        n.rect(16., 18., 804., 74., 10., key, border);
-        // Only the empty keyboard needs a placeholder. Candidate chips supply
-        // their own backgrounds; settings replaces this entire region.
-        if !self.settings_open && self.state.candidates.is_empty() {
-            n.rect(16., 100., 916., 56., 9., key, border);
-        }
-        let mode = if self.state.english {
-            if self.state.caps { "EN · CAPS" } else { "EN" }
-        } else {
-            "全拼"
-        };
-        n.text(mode, 30., 20., 100., 22., 12., muted, 0);
-        n.text(
-            &format!("{} / 144", self.state.count()),
-            715.,
-            20.,
-            90.,
-            22.,
-            12.,
-            if self.state.count() > 144 {
-                0xffbd5353
-            } else {
-                muted
-            },
-            2,
-        );
-        let status = if !self.notice.is_empty() {
-            self.notice.as_str()
-        } else if self.state.translating {
-            "正在翻译，可继续输入下一句"
-        } else if !self.state.status.is_empty() && self.state.status != "水杉已就绪" {
-            self.state.status.as_str()
-        } else {
-            if self.state.recoverable {
-                "上条未发送，草稿空白时可取回"
-            } else {
-                ""
+        if self.profile.is_none() {
+            n.rect(16., 18., 804., 74., 10., key, border);
+            // Only the empty keyboard needs a placeholder. Candidate chips supply
+            // their own backgrounds; settings replaces this entire region.
+            if !self.settings_open && self.state.candidates.is_empty() {
+                n.rect(16., 100., 916., 56., 9., key, border);
             }
-        };
-        n.text(
-            &fit_text(status, 565., 13.),
-            134.,
-            20.,
-            565.,
-            22.,
-            13.,
-            muted,
-            0,
-        );
-        if self.line.text.is_empty() {
-            let [x, y, w, h] = DRAFT_BOUNDS;
-            n.text("说点什么…", x, y, w, h, 26., muted, 0);
-        } else {
-            n.draft(
-                &self.line.text,
-                self.line.preedit_start,
-                self.line.preedit_len,
-                DRAFT_BOUNDS,
-                ink,
-            );
-        }
-        if self.settings_open {
-            n.rect(16., 100., 916., 356., 10., key, border);
-            if self.settings_page == SettingsPage::General {
-                n.text(
-                    "静默启动时隐藏窗口和 VR 面板",
-                    36.,
-                    380.,
-                    440.,
-                    24.,
-                    16.,
-                    muted,
-                    0,
-                );
-                n.text(
-                    "双击右 B 键呼出 VR 面板",
-                    36.,
-                    410.,
-                    440.,
-                    24.,
-                    16.,
-                    muted,
-                    0,
-                );
-            }
-            if self.settings_page != SettingsPage::Translation {
-                n.text("悬浮宽度", 554., 114., 300., 28., 18., muted, 0);
-                n.text(
-                    &format!("{:.0} cm", self.settings.width_m * 100.),
-                    554.,
-                    144.,
-                    280.,
-                    44.,
-                    30.,
-                    ink,
-                    0,
-                );
-                n.text(
-                    &format!("OSC  {}", self.settings.osc_address),
-                    514.,
-                    294.,
-                    400.,
-                    26.,
-                    15.,
-                    muted,
-                    0,
-                );
-                n.text(
-                    &fit_text(&self.runtime_status, 400., 12.),
-                    514.,
-                    322.,
-                    400.,
-                    24.,
-                    12.,
-                    muted,
-                    0,
-                );
-                n.text(
-                    if self.state.neural_status.is_empty() {
-                        "智能联想已开启"
-                    } else {
-                        &self.state.neural_status
-                    },
-                    514.,
-                    343.,
-                    400.,
-                    22.,
-                    12.,
-                    muted,
-                    0,
-                );
-                n.text(
-                    "防止游戏误触需 SteamVR 实验选项",
-                    514.,
-                    363.,
-                    400.,
-                    20.,
-                    12.,
-                    muted,
-                    0,
-                );
-                n.text(
-                    "Experimental overlay input overrides",
-                    514.,
-                    384.,
-                    400.,
-                    18.,
-                    11.,
-                    muted,
-                    0,
-                );
-                n.text(
-                    &format!(
-                        "Sylva · {}{}",
-                        env!("CARGO_PKG_VERSION"),
-                        if self.osc_enabled {
-                            ""
-                        } else {
-                            " · OSC 已关闭"
-                        }
-                    ),
-                    514.,
-                    429.,
-                    400.,
-                    18.,
-                    11.,
-                    muted,
-                    0,
-                );
-            } else if let Some((choice, page)) = self.choices {
-                n.text(
-                    &format!(
-                        "{}　{} / {}",
-                        choice.title(),
-                        page + 1,
-                        choice.entries().len().div_ceil(9)
-                    ),
-                    514.,
-                    114.,
-                    380.,
-                    30.,
-                    18.,
-                    muted,
-                    0,
-                );
+            let mode = if self.state.english {
+                if self.state.caps { "EN · CAPS" } else { "EN" }
             } else {
-                n.text(
-                    "发送时翻译，原文和译文各占一行",
-                    36.,
-                    414.,
-                    700.,
-                    28.,
-                    17.,
-                    muted,
-                    0,
-                );
-            }
-        }
-        if self.expanded && !self.settings_open {
+                "全拼"
+            };
+            n.text(mode, 30., 20., 100., 22., 12., muted, 0);
             n.text(
-                &format!("{} / {}", self.page + 1, self.page_count),
-                350.,
-                398.,
-                300.,
-                56.,
-                19.,
-                muted,
-                1,
+                &format!("{} / 144", self.state.count()),
+                715.,
+                20.,
+                90.,
+                22.,
+                12.,
+                if self.state.count() > 144 {
+                    0xffbd5353
+                } else {
+                    muted
+                },
+                2,
             );
+            let status = if !self.notice.is_empty() {
+                self.notice.as_str()
+            } else if self.state.translating {
+                "正在翻译，可继续输入下一句"
+            } else if !self.state.status.is_empty() && self.state.status != "水杉已就绪" {
+                self.state.status.as_str()
+            } else {
+                if self.state.recoverable {
+                    "上条未发送，草稿空白时可取回"
+                } else {
+                    ""
+                }
+            };
+            n.text(
+                &fit_text(status, 565., 13.),
+                134.,
+                20.,
+                565.,
+                22.,
+                13.,
+                muted,
+                0,
+            );
+            if self.line.text.is_empty() {
+                let [x, y, w, h] = DRAFT_BOUNDS;
+                n.text("说点什么…", x, y, w, h, 26., muted, 0);
+            } else {
+                n.draft(
+                    &self.line.text,
+                    self.line.preedit_start,
+                    self.line.preedit_len,
+                    DRAFT_BOUNDS,
+                    ink,
+                );
+            }
+            if self.settings_open {
+                n.rect(16., 100., 916., 356., 10., key, border);
+                if self.settings_page == SettingsPage::General {
+                    n.text(
+                        "静默启动时隐藏窗口和 VR 面板",
+                        36.,
+                        380.,
+                        440.,
+                        24.,
+                        16.,
+                        muted,
+                        0,
+                    );
+                    n.text(
+                        "双击右 B 键呼出 VR 面板",
+                        36.,
+                        410.,
+                        440.,
+                        24.,
+                        16.,
+                        muted,
+                        0,
+                    );
+                }
+                if self.settings_page != SettingsPage::Translation {
+                    n.text("悬浮宽度", 554., 114., 300., 28., 18., muted, 0);
+                    n.text(
+                        &format!("{:.0} cm", self.settings.width_m * 100.),
+                        554.,
+                        144.,
+                        280.,
+                        44.,
+                        30.,
+                        ink,
+                        0,
+                    );
+                    n.text(
+                        &format!("OSC  {}", self.settings.osc_address),
+                        514.,
+                        294.,
+                        400.,
+                        26.,
+                        15.,
+                        muted,
+                        0,
+                    );
+                    n.text(
+                        &fit_text(&self.runtime_status, 400., 12.),
+                        514.,
+                        322.,
+                        400.,
+                        24.,
+                        12.,
+                        muted,
+                        0,
+                    );
+                    n.text(
+                        if self.state.neural_status.is_empty() {
+                            "智能联想已开启"
+                        } else {
+                            &self.state.neural_status
+                        },
+                        514.,
+                        343.,
+                        400.,
+                        22.,
+                        12.,
+                        muted,
+                        0,
+                    );
+                    n.text(
+                        "防止游戏误触需 SteamVR 实验选项",
+                        514.,
+                        363.,
+                        400.,
+                        20.,
+                        12.,
+                        muted,
+                        0,
+                    );
+                    n.text(
+                        "Experimental overlay input overrides",
+                        514.,
+                        384.,
+                        400.,
+                        18.,
+                        11.,
+                        muted,
+                        0,
+                    );
+                    n.text(
+                        &format!(
+                            "Sylva · {}{}",
+                            env!("CARGO_PKG_VERSION"),
+                            if self.osc_enabled {
+                                ""
+                            } else {
+                                " · OSC 已关闭"
+                            }
+                        ),
+                        514.,
+                        429.,
+                        400.,
+                        18.,
+                        11.,
+                        muted,
+                        0,
+                    );
+                } else if let Some((Choice::Service(_), _)) = self.choices {
+                    n.text("选择翻译服务", 514., 114., 255., 30., 18., muted, 0);
+                    n.rect(251., 171., 1., 247., 0., border, 0);
+                } else if let Some((choice, page)) = self.choices {
+                    n.text(
+                        &format!(
+                            "{}　{} / {}",
+                            choice.title(),
+                            page + 1,
+                            choice.entries().len().div_ceil(9)
+                        ),
+                        514.,
+                        114.,
+                        380.,
+                        30.,
+                        18.,
+                        muted,
+                        0,
+                    );
+                } else {
+                    n.text(
+                        "发送时翻译，原文和译文各占一行",
+                        36.,
+                        414.,
+                        700.,
+                        28.,
+                        17.,
+                        muted,
+                        0,
+                    );
+                }
+            }
+            if self.expanded && !self.settings_open {
+                n.text(
+                    &format!("{} / {}", self.page + 1, self.page_count),
+                    350.,
+                    398.,
+                    300.,
+                    56.,
+                    19.,
+                    muted,
+                    1,
+                );
+            }
+        } else {
+            self.profile_header(n, ink, muted, key, border);
         }
         for b in &self.buttons {
             let hovered = !self.vr && self.hover.contains(&Some(b.id));
@@ -1193,6 +1270,9 @@ impl Ui {
                 55 => Some(Icon::Backspace),
                 _ => None,
             };
+            if self.profile_button_text(n, b, text, muted) {
+                continue;
+            }
             if let Some(icon) = icon {
                 let size = match b.id {
                     113 => 24.,
@@ -1362,7 +1442,7 @@ mod tests {
         ui.rebuild();
         ui
     }
-    fn assert_geometry(ui: &Ui) {
+    pub(super) fn assert_geometry(ui: &Ui) {
         for (i, a) in ui.buttons.iter().enumerate() {
             assert!(
                 a.x >= 0. && a.y >= 0. && a.x + a.w <= WIDTH && a.y + a.h <= HEIGHT,
@@ -1388,7 +1468,7 @@ mod tests {
         assert!(!ui.settings.translation.enabled);
         assert_eq!(ui.settings.translation.provider, "edge");
         for choice in [
-            Choice::Service,
+            Choice::Service(Group::Free),
             Choice::Source,
             Choice::First,
             Choice::Second,

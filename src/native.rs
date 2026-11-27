@@ -64,6 +64,7 @@ unsafe extern "C" {
     fn native_draft_hit(x: f32, y: f32) -> i32;
     fn native_icon(id: u32, x: f32, y: f32, size: f32, fill: u32);
     fn native_copy_text(text: *const u16, len: u32) -> u32;
+    fn native_paste_text(text: *mut u16, capacity: u32, len: *mut u32) -> u32;
     fn native_neural_background() -> i32;
     fn native_present() -> i32;
     fn native_mirror() -> i32;
@@ -83,6 +84,18 @@ pub enum Icon {
     Backspace,
 }
 impl Native {
+    pub fn clipboard_text() -> Result<String, String> {
+        let mut data = [0u16; 2561];
+        let mut n = 0;
+        match unsafe { native_paste_text(data.as_mut_ptr(), data.len() as u32, &mut n) } {
+            0 if n > 0 => {
+                String::from_utf16(&data[..n as usize]).map_err(|_| "剪贴板文本无效".into())
+            }
+            0 | 232 => Err("剪贴板中没有文字".into()),
+            122 => Err("剪贴板内容过长".into()),
+            _ => Err("剪贴板暂不可用，请重试".into()),
+        }
+    }
     pub fn lifecycle_check() -> Result<i32, String> {
         let checks = unsafe { native_lifecycle_check() };
         if checks > 0 {

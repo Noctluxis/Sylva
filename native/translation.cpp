@@ -80,50 +80,6 @@ extern "C" DWORD translation_credential(const wchar_t* target, BYTE* bytes, DWOR
     CredFree(c);
     return error;
 }
-struct ProfileFields { const wchar_t* title; const wchar_t** labels; wchar_t** values; };
-static void moveUp(HWND parent,int id,int amount) {
-    HWND item=GetDlgItem(parent,id);
-    RECT rect{};GetWindowRect(item,&rect);MapWindowPoints(nullptr,parent,reinterpret_cast<POINT*>(&rect),2);
-    SetWindowPos(item,nullptr,rect.left,rect.top-amount,0,0,SWP_NOSIZE|SWP_NOZORDER);
-}
-static INT_PTR CALLBACK profileDialog(HWND wnd,UINT msg,WPARAM w,LPARAM l) {
-    auto f=reinterpret_cast<ProfileFields*>(GetWindowLongPtrW(wnd,DWLP_USER));
-    if (msg==WM_INITDIALOG) {
-        f=reinterpret_cast<ProfileFields*>(l); SetWindowLongPtrW(wnd,DWLP_USER,l);
-        SetWindowTextW(wnd,f->title);
-        RECT units{0,0,0,29};MapDialogRect(wnd,&units);int missing=0;
-        for (int i=0;i<4;i++) {
-            const bool show=*f->labels[i]!=0;
-            SetDlgItemTextW(wnd,510+i,f->labels[i]);
-            SetDlgItemTextW(wnd,520+i,f->values[i]);
-            SendDlgItemMessageW(wnd,520+i,EM_SETLIMITTEXT,1023,0);
-            ShowWindow(GetDlgItem(wnd,510+i),show?SW_SHOW:SW_HIDE);
-            ShowWindow(GetDlgItem(wnd,520+i),show?SW_SHOW:SW_HIDE);
-            if (show) {
-                moveUp(wnd,510+i,missing*units.bottom);
-                moveUp(wnd,520+i,missing*units.bottom);
-            } else ++missing;
-        }
-        const int offset=missing*units.bottom;
-        for(int id : {530,IDOK,IDCANCEL}) moveUp(wnd,id,offset);
-        RECT bounds{};GetWindowRect(wnd,&bounds);
-        SetWindowPos(wnd,nullptr,0,0,bounds.right-bounds.left,bounds.bottom-bounds.top-offset,SWP_NOMOVE|SWP_NOZORDER);
-        return TRUE;
-    }
-    if (msg==WM_COMMAND && LOWORD(w)==IDOK && f) {
-        for (int i=0;i<4;i++) GetDlgItemTextW(wnd,520+i,f->values[i],1024);
-        EndDialog(wnd,IDOK); return TRUE;
-    }
-    if (msg==WM_CLOSE || (msg==WM_COMMAND && LOWORD(w)==IDCANCEL)) {EndDialog(wnd,IDCANCEL);return TRUE;}
-    return FALSE;
-}
-extern "C" int translation_edit(const wchar_t* title,const wchar_t** labels,wchar_t** values) {
-    ProfileFields fields{title,labels,values};
-    return int(DialogBoxParamW(GetModuleHandleW(nullptr),MAKEINTRESOURCEW(502),nullptr,profileDialog,reinterpret_cast<LPARAM>(&fields)));
-}
-extern "C" void translation_dialog_error(const wchar_t* msg) {
-    MessageBoxW(nullptr,msg,L"Sylva",MB_OK|MB_ICONWARNING);
-}
 extern "C" int translation_digest(const wchar_t* algorithm,const BYTE* key,DWORD keyLen,const BYTE* data,DWORD size,BYTE* out,DWORD len) {
     BCRYPT_ALG_HANDLE handle=nullptr;
     if(BCryptOpenAlgorithmProvider(&handle,algorithm,nullptr,keyLen?BCRYPT_ALG_HANDLE_HMAC_FLAG:0)<0) return 0;

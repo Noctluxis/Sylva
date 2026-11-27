@@ -16,12 +16,6 @@ unsafe extern "C" {
     ) -> u32;
     fn translation_free(data: *mut u8);
     fn translation_credential(name: *const u16, buf: *mut u8, len: *mut u32, write: i32) -> u32;
-    fn translation_edit(
-        title: *const u16,
-        labels: *const *const u16,
-        values: *const *mut u16,
-    ) -> i32;
-    fn translation_dialog_error(text: *const u16);
     fn translation_digest(
         algorithm: *const u16,
         key: *const u8,
@@ -35,12 +29,86 @@ unsafe extern "C" {
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain([0]).collect()
 }
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 pub struct Account {
     pub key: String,
     pub id: String,
     pub model: String,
     pub base: String,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Field {
+    Key,
+    Id,
+    Model,
+    Base,
+}
+impl Field {
+    pub fn get(self, a: &Account) -> &str {
+        match self {
+            Self::Key => &a.key,
+            Self::Id => &a.id,
+            Self::Model => &a.model,
+            Self::Base => &a.base,
+        }
+    }
+    pub fn set(self, a: &mut Account, value: String) {
+        *match self {
+            Self::Key => &mut a.key,
+            Self::Id => &mut a.id,
+            Self::Model => &mut a.model,
+            Self::Base => &mut a.base,
+        } = value;
+    }
+}
+impl Service {
+    pub fn model_hint(&self) -> Option<&'static str> {
+        match self.id {
+            "ollama" => Some("填写 ollama list 中的模型名，含标签"),
+            "lmstudio" => Some("填写 LM Studio 中已加载的模型 ID"),
+            "llamacpp" => Some("填写服务使用的模型名或 --alias"),
+            "ark" => Some("填写模型 ID 或 ep- 开头的接入点 ID"),
+            "openrouter" => Some("填写供应商/模型名"),
+            _ => None,
+        }
+    }
+    pub fn fields(&self) -> &'static [(Field, &'static str, &'static str)] {
+        use Field::*;
+        match self.kind {
+            Kind::Chat => &[
+                (Key, "API Key", "输入或粘贴密钥"),
+                (Model, "模型 ID", "填写账号可用的模型或接入点 ID"),
+                (Base, "API 地址", "兼容接口的基础地址"),
+            ],
+            Kind::LocalChat => &[
+                (Base, "API 地址", "例如 http://127.0.0.1:8080/v1"),
+                (Model, "模型 ID", "填写服务中已加载的模型名"),
+                (Key, "API Key", "可选"),
+            ],
+            Kind::Azure => &[
+                (Key, "订阅密钥", "输入或粘贴密钥"),
+                (Id, "资源区域", "按 Azure 资源填写，例如 eastasia"),
+            ],
+            Kind::Papago => &[
+                (Id, "Client ID", "应用客户端 ID"),
+                (Key, "Client Secret", "输入或粘贴密钥"),
+            ],
+            Kind::Baidu => &[
+                (Id, "APP ID", "百度翻译开放平台的应用 ID"),
+                (Key, "密钥", "输入或粘贴密钥"),
+            ],
+            Kind::Tencent => &[
+                (Id, "SecretId", "腾讯云访问密钥 ID"),
+                (Key, "SecretKey", "输入或粘贴密钥"),
+                (Model, "地域", "默认 ap-guangzhou"),
+            ],
+            Kind::Alibaba => &[
+                (Id, "AccessKey ID", "阿里云访问密钥 ID"),
+                (Key, "AccessKey Secret", "输入或粘贴密钥"),
+            ],
+            _ => &[(Key, "API Key", "输入或粘贴密钥")],
+        }
+    }
 }
 fn target(s: &Service) -> Vec<u16> {
     wide(&format!("Sylva/Translation/{}", s.id))
@@ -59,14 +127,11 @@ pub fn account(s: &Service) -> Result<Account, String> {
     if !s.account() {
         return Ok(Account::default());
     }
-    let mut a = load(s)?;
-    if a.base.is_empty() {
-        a.base = s.base.into();
-    }
-    if a.key.is_empty() && s.id != "custom" {
+    let a = load_account(s)?;
+    if a.key.is_empty() && s.kind != Kind::LocalChat {
         return Err(format!("请先配置 {} 的凭据", s.name));
     }
-    if s.kind == Kind::Chat && (a.model.is_empty() || a.base.is_empty()) {
+    if matches!(s.kind, Kind::Chat | Kind::LocalChat) && (a.model.is_empty() || a.base.is_empty()) {
         return Err("请先配置模型 ID 和服务地址".into());
     }
     if matches!(
@@ -78,63 +143,68 @@ pub fn account(s: &Service) -> Result<Account, String> {
     }
     Ok(a)
 }
-pub fn edit_account(s: &Service) -> Result<(), String> {
+pub fn load_account(s: &Service) -> Result<Account, String> {
     let mut a = load(s)?;
     if a.base.is_empty() {
         a.base = s.base.into();
     }
-    let labels = match s.kind {
-        Kind::Chat => ["API Key", "", "模型 / 接入点 ID", "API 基础地址"],
-        Kind::Azure => ["订阅密钥", "区域（按资源填写）", "", ""],
-        Kind::Papago => ["Client Secret", "Client ID", "", ""],
-        Kind::Baidu => ["密钥", "APP ID", "", ""],
-        Kind::Tencent => ["SecretKey", "SecretId", "地域（默认广州）", ""],
-        Kind::Alibaba => ["AccessKey Secret", "AccessKey ID", "", ""],
-        _ => ["API Key", "", "", ""],
+    Ok(a)
+}
+pub fn save_account(s: &Service, a: &Account) -> Result<(), String> {
+    let mut data = serde_json::to_vec(a).map_err(|_| "无法编码服务配置")?;
+    if data.len() > 2560 {
+        return Err("配置过长，请缩短密钥、模型或地址".into());
     }
-    .map(wide);
-    let labels = labels.each_ref().map(|s| s.as_ptr());
-    let mut values = [&a.key, &a.id, &a.model, &a.base].map(|s| {
-        let mut out = [0u16; 1024];
-        for (dest, c) in out[..1023].iter_mut().zip(s.encode_utf16()) {
-            *dest = c;
+    let mut size = data.len() as u32;
+    let err =
+        unsafe { translation_credential(target(s).as_ptr(), data.as_mut_ptr(), &mut size, 1) };
+    if err == 0 {
+        Ok(())
+    } else {
+        Err(format!("保存 Windows 凭据失败 ({err})"))
+    }
+}
+#[cfg(test)]
+mod credential_tests {
+    use super::*;
+    #[test]
+    #[ignore = "writes and removes a temporary test-only Windows credential"]
+    fn edited_profile_uses_the_existing_credential_format() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let id = format!(
+            "fixture-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let s = Service {
+            id: Box::leak(id.into_boxed_str()),
+            name: "Test",
+            kind: Kind::Chat,
+            base: "https://example.invalid/v1",
+        };
+        let mut a = load_account(&s).unwrap();
+        assert_eq!(a.base, s.base);
+        assert!(a.key.is_empty());
+        a.key = "synthetic".into();
+        a.model = "local-fixture".into();
+        save_account(&s, &a).unwrap();
+        struct Cleanup(Vec<u16>);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                unsafe extern "system" {
+                    fn CredDeleteW(target: *const u16, kind: u32, flags: u32) -> i32;
+                }
+                assert_ne!(unsafe { CredDeleteW(self.0.as_ptr(), 1, 0) }, 0);
+            }
         }
-        out
-    });
-    let pointers = values.each_mut().map(|s| s.as_mut_ptr());
-    let code = unsafe {
-        translation_edit(
-            wide(&format!("Sylva · {}", s.name)).as_ptr(),
-            labels.as_ptr(),
-            pointers.as_ptr(),
-        )
-    };
-    if code < 0 {
-        return Err("无法打开配置窗口".into());
+        let _cleanup = Cleanup(target(&s));
+        let stored = account(&s).unwrap();
+        assert_eq!(stored.model, "local-fixture");
+        assert_eq!(stored.key, "synthetic");
     }
-    if code == 1 {
-        let [key, id, model, base] = values.map(|b| {
-            String::from_utf16_lossy(&b[..b.iter().position(|x| *x == 0).unwrap_or(b.len())])
-                .trim()
-                .to_owned()
-        });
-        let mut data = serde_json::to_vec(&Account {
-            key,
-            id,
-            model,
-            base,
-        })
-        .unwrap();
-        let mut size = data.len() as u32;
-        let err =
-            unsafe { translation_credential(target(s).as_ptr(), data.as_mut_ptr(), &mut size, 1) };
-        if err != 0 {
-            let msg = format!("保存 Windows 凭据失败 ({err})");
-            unsafe { translation_dialog_error(wide(&msg).as_ptr()) };
-            return Err(msg);
-        }
-    }
-    Ok(())
 }
 pub fn http(url: &str, headers: &[(&str, &str)], body: Option<&str>) -> Result<String, String> {
     if url.chars().any(char::is_control)

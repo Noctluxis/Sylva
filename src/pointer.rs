@@ -17,7 +17,13 @@ impl Pointer {
         now: Instant,
     ) -> Option<UiAction> {
         self.pressed = id;
-        self.repeat = if matches!(action, Some(UiAction::Input(Action::Backspace))) {
+        self.repeat = if matches!(
+            action,
+            Some(
+                UiAction::Input(Action::Backspace)
+                    | UiAction::Profile(crate::ui::ProfileAction::Backspace)
+            )
+        ) {
             Some(now + Duration::from_millis(450))
         } else {
             None

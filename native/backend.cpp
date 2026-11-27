@@ -270,8 +270,20 @@ static LRESULT CALLBACK wndproc(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp) {
     case WM_LBUTTONDOWN:SetCapture(hwnd);queueEvent({3,2,x,y,0});return 0;
     case WM_LBUTTONUP:queueEvent({4,2,x,y,0});ReleaseCapture();return 0;
     case WM_CAPTURECHANGED:case WM_KILLFOCUS:queueEvent({7,2,0,0,0});return 0;
-    case WM_CHAR: if(wp>=32||wp==8||wp==13||wp==27)queueEvent({5,2,0,0,(unsigned)wp});return 0;
-    case WM_KEYDOWN:if(wp==VK_CAPITAL)queueEvent({5,2,0,0,0x110000});return 0;
+    case WM_PASTE:queueEvent({11,2,0,0,22});return 0;
+    case WM_CHAR:{
+        static unsigned high=0;
+        unsigned c=unsigned(wp);
+        if(c>=0xd800 && c<=0xdbff){high=c;return 0;}
+        if(c>=0xdc00 && c<=0xdfff){if(!high)return 0;c=0x10000+((high-0xd800)<<10)+(c-0xdc00);}
+        high=0;
+        if(c==1||c==22||c==9)queueEvent({11,2,0,0,c==9 && (GetKeyState(VK_SHIFT)&0x8000)?0x10009u:c});
+        else if(c>=32||c==8||c==13||c==27)queueEvent({5,2,0,0,c});return 0;
+    }
+    case WM_KEYDOWN:
+        if(wp==VK_CAPITAL)queueEvent({5,2,0,0,0x110000});
+        else if(wp==VK_LEFT||wp==VK_RIGHT||wp==VK_HOME||wp==VK_END||wp==VK_DELETE)queueEvent({11,2,0,0,unsigned(wp)});
+        return 0;
     }
     return DefWindowProcW(hwnd,msg,wp,lp);
 }
@@ -677,6 +689,22 @@ extern "C" void native_icon(unsigned id,float x,float y,float size,unsigned fill
     D2D1_MATRIX_3X2_F previous{};paint->GetTransform(&previous);
     paint->SetTransform(D2D1::Matrix3x2F::Scale(size/24.f,size/24.f)*D2D1::Matrix3x2F::Translation(x,y)*previous);
     brush->SetColor(color(fill));paint->DrawGeometry(iconGeometry[id].Get(),brush.Get(),1.8f,iconStroke.Get());paint->SetTransform(previous);
+}
+extern "C" unsigned native_paste_text(unsigned short* text,unsigned capacity,unsigned* length){
+    if(!OpenClipboard(window))return ERROR_ACCESS_DENIED;
+    HANDLE data=GetClipboardData(CF_UNICODETEXT);
+    DWORD error=ERROR_NO_DATA;
+    if(data){
+        const auto* str=static_cast<const unsigned short*>(GlobalLock(data));
+        if(str){
+            size_t max=std::min<size_t>(capacity,GlobalSize(data)/sizeof(*str));
+            size_t n=0;while(n<max && str[n])++n;
+            if(n<max){std::memcpy(text,str,n*sizeof(*str));*length=unsigned(n);error=ERROR_SUCCESS;}
+            else error=ERROR_INSUFFICIENT_BUFFER;
+            GlobalUnlock(data);
+        }
+    }
+    CloseClipboard();return error;
 }
 extern "C" unsigned native_copy_text(const unsigned short* text,unsigned len){
     auto memory=GlobalAlloc(GMEM_MOVEABLE,(size_t(len)+1)*sizeof(wchar_t));if(!memory)return ERROR_NOT_ENOUGH_MEMORY;

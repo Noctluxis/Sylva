@@ -74,9 +74,8 @@ fn main() {
     fs::write(
         &rc,
         format!(
-            "101 ICON \"{}\"\n{}",
-            icon.display().to_string().replace('\\', "/"),
-            include_str!("native/translation.rc")
+            "101 ICON \"{}\"\n",
+            icon.display().to_string().replace('\\', "/")
         ),
     )
     .unwrap();
@@ -135,7 +134,6 @@ fn main() {
     }
     println!("cargo:rerun-if-changed=native/backend.cpp");
     println!("cargo:rerun-if-changed=native/translation.cpp");
-    println!("cargo:rerun-if-changed=native/translation.rc");
     println!("cargo:rerun-if-changed=native/key_audio.cpp");
     println!("cargo:rerun-if-changed=native/lifecycle.h");
     println!("cargo:rerun-if-changed=native/panel_geometry.h");

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 mod platform;
 mod providers;
-pub use platform::edit_account;
+pub use platform::{Account, Field, load_account, save_account};
 use serde::{Deserialize, Serialize};
 use std::{sync::mpsc, thread};
 
@@ -19,6 +19,25 @@ pub enum Kind {
     Tencent,
     Alibaba,
     Chat,
+    LocalChat,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Group {
+    Free,
+    Machine,
+    Model,
+    Hosted,
+}
+impl Group {
+    pub const ALL: [Self; 4] = [Self::Free, Self::Machine, Self::Model, Self::Hosted];
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Free => "免 Key 在线",
+            Self::Machine => "机器翻译 API",
+            Self::Model => "大模型 API",
+            Self::Hosted => "本地 / 自建",
+        }
+    }
 }
 pub struct Service {
     pub id: &'static str,
@@ -80,7 +99,30 @@ pub static SERVICES: &[Service] = &[
     service!("groq", "Groq", "https://api.groq.com/openai/v1"),
     service!("openrouter", "OpenRouter", "https://openrouter.ai/api/v1"),
     service!("plamo", "PLaMo", "https://api.platform.preferredai.jp/v1"),
-    service!("custom", "自定义兼容接口", ""),
+    Service {
+        id: "ollama",
+        name: "Ollama",
+        kind: Kind::LocalChat,
+        base: "http://127.0.0.1:11434/v1",
+    },
+    Service {
+        id: "lmstudio",
+        name: "LM Studio",
+        kind: Kind::LocalChat,
+        base: "http://127.0.0.1:1234/v1",
+    },
+    Service {
+        id: "llamacpp",
+        name: "llama.cpp",
+        kind: Kind::LocalChat,
+        base: "http://127.0.0.1:8080/v1",
+    },
+    Service {
+        id: "custom",
+        name: "自定义兼容接口",
+        kind: Kind::LocalChat,
+        base: "",
+    },
 ];
 pub const LANGS: &[(&str, &str)] = &[
     ("zh-CN", "简体中文"),
@@ -109,11 +151,16 @@ pub fn service(id: &str) -> Option<&'static Service> {
     SERVICES.iter().find(|p| p.id == id)
 }
 impl Service {
+    pub fn group(&self) -> Group {
+        match self.kind {
+            Kind::Edge | Kind::Memory | Kind::Bing | Kind::Google => Group::Free,
+            Kind::Chat => Group::Model,
+            Kind::LocalChat => Group::Hosted,
+            _ => Group::Machine,
+        }
+    }
     pub fn account(&self) -> bool {
-        !matches!(
-            self.kind,
-            Kind::Edge | Kind::Memory | Kind::Bing | Kind::Google
-        )
+        self.group() != Group::Free
     }
 }
 
